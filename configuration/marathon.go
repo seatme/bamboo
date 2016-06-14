@@ -14,6 +14,8 @@ type Marathon struct {
 	Password string
 
 	UseEventStream bool
+
+	RequireHealthCheck bool
 }
 
 func (m Marathon) Endpoints() []string {

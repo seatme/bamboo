@@ -2,11 +2,13 @@ package marathon
 
 import (
 	"encoding/json"
-	"github.com/QubitProducts/bamboo/configuration"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/QubitProducts/bamboo/configuration"
 )
 
 // Describes an app process running
@@ -60,14 +62,24 @@ type marathonTasks struct {
 }
 
 type marathonTask struct {
-	AppId        string
-	Id           string
-	Host         string
-	Ports        []int
-	ServicePorts []int
-	StartedAt    string
-	StagedAt     string
-	Version      string
+	AppId              string
+	Id                 string
+	Host               string
+	Ports              []int
+	ServicePorts       []int
+	StartedAt          string
+	StagedAt           string
+	Version            string
+	HealthCheckResults []healthCheckResult
+}
+
+type healthCheckResult struct {
+	Alive               bool
+	ConsecutiveFailures int
+	FirstSuccess        string
+	LastFailure         string
+	LastSuccess         string
+	TaskID              string
 }
 
 func (slice marathonTaskList) Len() int {
@@ -136,6 +148,38 @@ func fetchMarathonApps(endpoint string, conf *configuration.Configuration) (map[
 	return dataById, nil
 }
 
+func taskReady(conf *configuration.Configuration, task marathonTask) (isReady bool) {
+	if !conf.Marathon.RequireHealthCheck {
+		return true
+	}
+
+	skipTask := false
+
+	// If the node hasn't health checked, it's out of service
+	if len(task.HealthCheckResults) == 0 {
+		skipTask = true
+		log.Printf("Task %s hasn't yet health checked", task.Id)
+	}
+
+	for _, result := range task.HealthCheckResults {
+		// If there's multiple health check results, this indicates theres
+		// mutliple defined healthchecks. We assume all of them must succeed
+		// in order to use their health check. The presence of a non-empty
+		// lastSucces value is enough to indicate it did health check
+		// once and is safe to hand off to haproxy
+		if result.LastSuccess == "" {
+			skipTask = true
+			log.Printf("Task %s has not yet had a health check succeed", task.Id)
+		}
+
+		// If the task must be healthy to be added, check that it's both
+		// flagged alive, has a last success and the failure count is 0.
+		log.Printf("Task is alive: %t failures: %d lastSuccess %s lastFailure %s", result.Alive, result.ConsecutiveFailures, result.LastSuccess, result.LastFailure)
+	}
+
+	return !skipTask
+}
+
 func fetchTasks(endpoint string, conf *configuration.Configuration) (map[string]marathonTaskList, error) {
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", endpoint+"/v2/tasks", nil)
@@ -171,7 +215,10 @@ func fetchTasks(endpoint string, conf *configuration.Configuration) (map[string]
 		if tasksById[task.AppId] == nil {
 			tasksById[task.AppId] = marathonTaskList{}
 		}
-		tasksById[task.AppId] = append(tasksById[task.AppId], task)
+
+		if taskReady(conf, task) {
+			tasksById[task.AppId] = append(tasksById[task.AppId], task)
+		}
 	}
 
 	for _, task_list := range tasksById {
@@ -247,11 +294,11 @@ func parseHealthCheckPath(checks []marathonHealthCheck) string {
 }
 
 /*
-	Apps returns a struct that describes Marathon current app and their
-	sub tasks information.
+   Apps returns a struct that describes Marathon current app and their
+   sub tasks information.
 
-	Parameters:
-		endpoint: Marathon HTTP endpoint, e.g. http://localhost:8080
+   Parameters:
+       endpoint: Marathon HTTP endpoint, e.g. http://localhost:8080
 */
 func FetchApps(maraconf configuration.Marathon, conf *configuration.Configuration) (AppList, error) {
 
