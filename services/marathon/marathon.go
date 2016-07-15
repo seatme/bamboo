@@ -150,6 +150,7 @@ func fetchMarathonApps(endpoint string, conf *configuration.Configuration) (map[
 
 func taskReady(conf *configuration.Configuration, task marathonTask) (isReady bool) {
 	if !conf.Marathon.RequireHealthCheck {
+		log.Printf("Skipping taskReady? for %s as Health Check is not required!", task.Id)
 		return true
 	}
 
